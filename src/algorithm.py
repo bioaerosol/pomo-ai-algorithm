@@ -2,9 +2,12 @@
 """
 Created on Wed Dec 21 10:00:36 2022
 @author: stemmler_t (Tom Stemmler, t.stemmler@hund.de)
+
+Modified on Wed Nov 18 2026
+@modified by: Samer Alashhab (salashhab@ua.es)
 """
 
-version = "v1.34.0.1"
+version = "1.39S0.3C3.2"
 
 
 

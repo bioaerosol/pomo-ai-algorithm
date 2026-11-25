@@ -3,6 +3,9 @@
 Created on Thu Dec 22 08:30:26 2022
 
 @author: stemmler_t
+
+Modified on Wed Nov 18 2026
+@modified by: Samer Alashhab (salashhab@ua.es)
 """
 
 
@@ -209,7 +212,7 @@ class PomoAI:
                                          self.config.get("MAIN", "DeviceType"),
                                          self.config.get("MAIN", "Name"),
                                          self.config.get("MAIN", "SerialNumber"),
-                                         self.version)
+                                         self.config.get("MAIN", "SoftwareVersion"))
         
         self.saveSamplePickle(evaluator)
             
@@ -295,17 +298,11 @@ class PomoAI:
             
         # Initialize classifier
         logger.info("Initialize classifier")
-        pomoClassifier = classifier.PomoClassification(path)
-
-        pathPollenTreshold = os.path.join("config", 
-                                          "tresholdPollen_" + 
-                                          f"{pomoClassifier._modelVersion}" + 
-                                          ".ini")
         
-        
+        pathPollenTreshold = "src/config/tresholdPollen_v3.2.ini"     
         pollenTreshold = self.loadPollenTreshold(pathPollenTreshold)
+        pomoClassifier = classifier.PomoClassification(path, pollenTreshold)
 
-        pomoClassifier.setSpeciesNames(pollenTreshold)
         return pomoClassifier
         
       

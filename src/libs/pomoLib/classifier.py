@@ -1,8 +1,11 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Created on Fri Feb 17 08:31:47 2023
 
 @author: stemmler_t
+
+Modified on Wed Nov 18 2026
+@modified by: Samer Alashhab (salashhab@ua.es)
 """
 
 
@@ -22,6 +25,13 @@ import numpy as np
 from tensorflow.keras import models
 import os
 
+import torch
+from PIL import Image
+from torchvision import transforms
+import timm
+import torch.nn.functional as F
+
+import random
 
 """
 --------------------------------------
@@ -31,74 +41,138 @@ Classes
 """
 
 class PomoClassification:
-    
-    def __init__(self, pathModel):
+
+    def __init__(self, pathModel, pollenTreshold):
         self.pathModel = pathModel
         
-        self.speciesNames: list = []
+        self.speciesNames = pollenTreshold
+
+        # Disable gradient computation
+        torch.set_grad_enabled(False)
+
+        # Set deterministic behavior
+        torch.manual_seed(42)
+        random.seed(42)
+        np.random.seed(42)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
         
         if os.path.isfile(pathModel):
             # Get version
             head, tail = os.path.split(self.pathModel)
-            version = tail.split("_")[0]
+            version = "V3.2"
             if version.startswith("v"):
                 self._modelVersion = version
             else:
                 logger.warning("Could not get version of classifier")
                 self._modelVersion = "vX.X"
             logger.info(f"Load classifier model: {tail}")
+
+            self._IMAGE_SIZE = 350
+
+            self._transform = transforms.Compose([
+            transforms.Resize((self._IMAGE_SIZE, self._IMAGE_SIZE)),
+            transforms.Grayscale(num_output_channels=3),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])
+           ])
+
             # Load model
-            self._model = models.load_model(pathModel)
-            
+            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            print(f"Number of classes: {len(self.speciesNames)}")
+
+            # Create the model with the correct number of classes
+            self._model = timm.create_model("convnext_base", pretrained=False, num_classes=len(self.speciesNames))
+
+            # Load checkpoint
+            checkpoint = torch.load(self.pathModel, map_location=self._device)
+
+            # Load model weights
+            load_result = self._model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+
+            # Move to device
+            self._model = self._model.to(self._device)
+            self._model.eval()
+
         else:
             logger.error("File/path of classifier model is not existing")
             raise ValueError("File/path of classifier model is not existing")
-            
-        # Check if classNames numb same as class num in model
-        
+
+
     def setSpeciesNames(self, Spec:list):
         self.speciesNames = Spec
-             
+       
+ 
 
-    def classifyObj(self, cuttedObj, print_klassifikation = False):
-        vgg19_image_size = 350
-        
-        numImg = len(cuttedObj)
-        imgPred= np.zeros((numImg, vgg19_image_size,vgg19_image_size,3), 
-                          np.float32)
-        
-        for i, obj in zip(range(numImg), cuttedObj):
-            shape = obj.shape
-
-            if(len(shape) == 2):
-                obj = cv2.cvtColor(obj,cv2.COLOR_GRAY2RGB)
-                 
-            pollePrep = np.float32(obj) / 255.0
+    def classifyObj(self, cuttedObj,imagefolder, print_klassifikation=True):
             
-            imgPred[i] = pollePrep
+        imgTensors = []
+
+        originalImages = []
+
+        for i, obj in enumerate(cuttedObj):
+            # Convert grayscale to RGB if needed
+            if len(obj.shape) == 2 or obj.shape[2] == 1:
+                obj = cv2.cvtColor(obj, cv2.COLOR_GRAY2RGB)
+
+            # Convert BGR (OpenCV default) to RGB
+            obj_rgb = cv2.cvtColor(obj, cv2.COLOR_BGR2RGB)
+
+            # Convert to PIL image
+            img_pil = Image.fromarray(obj_rgb)
+
+            # Apply transform
+            tensor = self._transform(img_pil)
+            imgTensors.append(tensor)
+            originalImages.append(obj.copy())
             
 
-        result = self._model.predict(imgPred)
-        
+        if not imgTensors:
+            return []  # no input case
+
+
+        # Stack all tensors into a batch
+        batch = torch.stack(imgTensors).to(self._device)
+
+        self._model.eval()
+        with torch.no_grad():
+            outputs = self._model(batch)
+            probabilities = F.softmax(outputs, dim=1)
+            confidences, predicted_indices = torch.max(probabilities, dim=1)
+
         classifiedObjs = []
-        for r in result:
+
+
+        for i, probs in enumerate(probabilities):
+            # Top-1 prediction
+            indexFirst = torch.argmax(probs).item()
+            classifScore = torch.round(probs[indexFirst] * 10000) / 10000
+
+            # Top-2 prediction
+            probs_clone = probs.clone()
+            probs_clone[indexFirst] = float('-inf')
+            indexSecond = torch.argmax(probs_clone).item()
+            classifScoreSecond = torch.round(probs[indexSecond] * 10000) / 10000
+
+            # Get class labels
+            labelFirst = self.speciesNames[indexFirst]
+            labelSecond = self.speciesNames[indexSecond]
+
+
+            # Store classification info
+            classifiedObjs.append({
+                'species': labelFirst,
+                'index': indexFirst,
+                'hitRate': classifScore,
+                'speciesSecond': labelSecond,
+                'indexSecond': indexSecond,
+                'hitRateSecond': classifScoreSecond
+            })
             
-            indexFirst = np.argsort(r)[-1]
-            classifScore = round(r[indexFirst],4)
-            
-            indexSecond = np.argsort(r)[-2]
-            classifScloreSecond = round(r[indexSecond],4)
-            
-            classifiedObjs.append({'species' : self.speciesNames[indexFirst], 
-                                   'index' : indexFirst, 
-                                   'hitRate' : classifScore, 
-                                   'speciesSecond' : self.speciesNames[indexSecond], 
-                                   'indexSecond' : indexSecond, 
-                                   'hitRateSecond' : classifScloreSecond})
-            
-            
+            print(f"[Image {i}] Class: {indexFirst}, Confidence: {classifScore:.4f} | Second: {indexSecond}, {classifScoreSecond:.4f}")
+
         return classifiedObjs
-          
 
 
 if __name__ == '__main__':
@@ -107,7 +181,6 @@ if __name__ == '__main__':
     classif.loadClassNames(r"")
     
     path = r""
-    
     for img in os.listdir(path):
         if os.path.isfile(os.path.join(path,img)):
             img = cv2.imread(os.path.join(path,img))

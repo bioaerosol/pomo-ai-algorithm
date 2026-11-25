@@ -3,6 +3,9 @@
 Created on Thu Dec 22 12:02:42 2022
 
 @author: stemmler_t
+
+Modified on Wed Nov 18 2026
+@modified by: Samer Alashhab (salashhab@ua.es)
 """
 
 import logging
@@ -41,7 +44,7 @@ class RegionAnalyzer:
     synth image and classify the founded objects
     """
     
-    def __init__(self, pathImg: str, fgBlkSynth: bool = False, 
+    def __init__(self, pathImg: str, beginnDerProbenahme: str, fgBlkSynth: bool = False, 
                  fgBlkRoughSynth: bool = False):
 
         self.pathImg: str = pathImg
@@ -60,6 +63,7 @@ class RegionAnalyzer:
         self.__getImgSize()
         self.dustPart: int = 0
         self.lstPomoObjs: list = [dcPomoObject]
+        self.beginnDerProbenahme = beginnDerProbenahme
         
         
     @property
@@ -148,8 +152,7 @@ class RegionAnalyzer:
         # Count of dust pariticals
         self.dustPart = pomoSegmenter.countParticle(r)   
         # Cuts spores, pollen and fragments, to get them classified afterwards
-        self.lstPomoObjs = pomoSegmenter.cutObj(self.imgSynth, r, 
-                                                     drawDust = False)
+        self.lstPomoObjs = pomoSegmenter.cutObj(self.imgSynth, r, drawDust = False)
         
     
     def classify(self, pomoClassifier: PomoClassification):
@@ -164,7 +167,7 @@ class RegionAnalyzer:
                                       obj.segClass == "sporen")])
         
         
-        classifObj = pomoClassifier.classifyObj(imgClassif)
+        classifObj = pomoClassifier.classifyObj(imgClassif,self.beginnDerProbenahme)
         
         if not len(classifObj) == len(imgClassif):
             logger.error("Something went wrong during classification!")
@@ -262,7 +265,7 @@ class Evaluator:
         self.beginnDerProbenahme: str = None 
         self.endeDerProbenahme: str = None 
         self.stationNumber: str = None
-        
+        self.unzippedPathSample: str = None
 
         # Get name of element of sample
         if not self.sampleType == sampleType.file:
@@ -274,7 +277,8 @@ class Evaluator:
                                            sampleInfo.get("pathSample"))
                 
                 pathSample = pomoUtils.unzipProbe(pathZipFile)
-                
+                self.unzippedPathSample = pathSample
+
             elif self.sampleType == sampleType.folder:
                 pathSample = sampleInfo.get("pathSample")
             
@@ -287,9 +291,9 @@ class Evaluator:
             for elem in os.listdir((os.path.join(self.pathSampleFolder, 
                                                  pathSample, 
                                                  "analysis"))):
-                
                 if "xml.xml" in elem:
                     print("Processing xml: ", elem)
+                    data = []
                     
                     xml_root = ElementTree.parse(os.path.join(self.pathSampleFolder, 
                                                       pathSample, "analysis",
@@ -300,6 +304,9 @@ class Evaluator:
                     
                     if (xml_root.find("./Analysenvolumenstrom") is not None and xml_root.find("./Analysenvolumenstrom").text):
                         self.volStrom =  int(float(xml_root.find("./Analysenvolumenstrom").text))
+
+                    if (xml_root.find("./Analysis_Volume_Flow_Corr") is not None and xml_root.find("./Analysis_Volume_Flow_Corr").text):
+                        self.volStrom =  int(float(xml_root.find("./Analysis_Volume_Flow_Corr").text))
                     
                     if (xml_root.find("./Seriennummer") is not None and xml_root.find("./Seriennummer").text):
                         self.serialNumber = xml_root.find("./Seriennummer").text
@@ -309,10 +316,44 @@ class Evaluator:
                         
                     if (xml_root.find("./Ende_der_Probenahme") is not None and xml_root.find("./Ende_der_Probenahme").text):
                         self.endeDerProbenahme = xml_root.find("./Ende_der_Probenahme").text
+
+                    if xml_root.find("./Starttime_Sampling") is not None and xml_root.find("./Starttime_Sampling").text:
+                        self.beginnDerProbenahme = xml_root.find("./Starttime_Sampling").text
+
+                    if xml_root.find("./Endtime_Sampling") is not None and xml_root.find("./Endtime_Sampling").text:
+                        self.endeDerProbenahme = xml_root.find("./Endtime_Sampling").text
                            
                     if (xml_root.find("./WMO-Stationsnummer") is not None and xml_root.find("./WMO-Stationsnummer").text):
                         self.stationNumber = xml_root.find("./WMO-Stationsnummer").text
-                        
+
+                    if (xml_root.find("./WMO_Stationnumber") is not None and xml_root.find("./WMO_Stationnumber").text):
+                        self.stationNumber = xml_root.find("./WMO_Stationnumber").text
+
+                    konz_list = xml_root.find("./Konzentrationsliste")
+                    if konz_list is not None:
+                        for info in konz_list.findall("./Konzentrationsinformation"):
+                            latin_name = info.attrib.get("Lateinischer_Name_Pollenart")
+                            pollen_count = info.attrib.get("Pollenanzahl")
+                            concentration = info.attrib.get("Pollenkonzentration")
+
+                            if latin_name and pollen_count and concentration:
+                                try:
+                                    row = {
+                                        "Beginn_der_Probenahme": self.beginnDerProbenahme,
+                                        "Ende_der_Probenahme": self.endeDerProbenahme,
+                                        "Device": self.deviceName,
+                                        "Analysenvolumenstrom": self.volStrom,
+                                        "Stationsnummer": self.stationNumber,
+                                        "Algorithm": "PomoAI",
+                                        "Lateinischer_Name_Pollenart": latin_name,
+                                        "Pollenanzahl": int(pollen_count),
+                                        "Pollenkonzentration": float(concentration)
+                                    }
+                                    data.append(row)
+                                except ValueError:
+                                    # Skip row if values are not valid numbers
+                                    continue
+                     
                         
                 if "asc.txt" in elem:
                     self.evalPast = True
@@ -322,9 +363,9 @@ class Evaluator:
             
                     # Get name and number of regions
                     lstNameRegions = [elem for elem in 
-                                      os.listdir(self.pathImgRegionFolder)
-                                      if elem.endswith("SYN._FP.png") or 
-                                      elem.endswith("SYN.png")]
+                                        os.listdir(self.pathImgRegionFolder)
+                                        if elem.endswith("SYN._FP.png") or 
+                                        elem.endswith("SYN.png")]
                     
                     self.regIter = iter(lstNameRegions)
                     self.numExistingRegions = len(lstNameRegions)
@@ -553,7 +594,7 @@ class Evaluator:
                                               self.activeImgRegion)           
               
             # Create instance of imageAnalyser and save add it to lstImgRegion
-            ImgRegion = RegionAnalyzer(pathNewImageRegion)
+            ImgRegion = RegionAnalyzer(pathNewImageRegion, self.beginnDerProbenahme)
             return ImgRegion
         else:
             self.active = False
@@ -592,7 +633,7 @@ class Evaluator:
         end = time.time()
         logger.info(f"Segmentate ({(end - start):.0f} s)")
         
-        
+
         if (imgReg.lstPomoObjs is not None) and any(((i.segClass == "pollen") or 
                                                      (i.segClass == "sporen")) 
                                                     for i in imgReg.lstPomoObjs):
@@ -710,7 +751,7 @@ class Evaluator:
         
         # Save segmented image
         logger.debug("Save segmented image")
-        cv2.imwrite(os.path.join(self.__pathOutImg, nameImgSeg), imgReg.imgSeg)
+        #cv2.imwrite(os.path.join(self.__pathOutImg, nameImgSeg), imgReg.imgSeg)
         
         imgReg.imgSeg = nameImgSeg
             
@@ -889,11 +930,11 @@ class Evaluator:
         logger.info("Create analyse files")
         
         # Enable for sylva
-        #self.__createJsonOuputFile()
+        self.__createJsonOuputFile()
         
         # Desable for sylva
-        self.__createXmlAnalysisFile()
-        self.__createCsvFile()
+        #self.__createXmlAnalysisFile()
+        #self.__createCsvFile()
         
         
         
@@ -905,33 +946,27 @@ class Evaluator:
         
         self.createAnalysisFiles()
         
-        #start = time.time()
-        #self.makeMap()
-        #end = time.time()
-        #logger.info(f"MakeMap ({(end - start):.0f} s)")
-        
-        #if self.sampleType == sampleType.zipped:
-            #logger.debug("Delete unzippt sample folder")
-        folder_path = os.path.join(self.pathSampleFolder, self.nameSample)
-        if os.path.isdir(folder_path):
-            shutil.rmtree(os.path.join(self.pathSampleFolder, self.nameSample))
+        #folder_path = os.path.join(self.pathSampleFolder, self.nameSample)
+        #if os.path.isdir(folder_path):
+            #shutil.rmtree(os.path.join(self.pathSampleFolder, self.nameSample))
 
         
         # remove temp folder (should be last action)
-        logger.debug("Remove temp folder from sample")
-        shutil.rmtree(self._pathOutTemp)
+        #logger.debug("Remove temp folder from sample")
+        #shutil.rmtree(self._pathOutTemp)
         
-        folder_to_zip = os.path.join(self.pathEvalOut, self.nameSample)
-        zip_file_path = shutil.make_archive(folder_to_zip, 'zip', folder_to_zip)
+        #folder_to_zip = os.path.join(self.pathEvalOut, self.nameSample)
+        #zip_file_path = shutil.make_archive(folder_to_zip, 'zip', folder_to_zip)
         
-        zip_file_name = os.path.basename(zip_file_path)
+        #zip_file_name = os.path.basename(zip_file_path)
         
-        destination_path = os.path.join(self.pathOutAnalysis, zip_file_name)
-        shutil.move(zip_file_path, destination_path)
+        #destination_path = os.path.join(self.pathOutAnalysis, zip_file_name)
+        #shutil.move(zip_file_path, destination_path)
         
-        shutil.rmtree(folder_to_zip)
+        #shutil.rmtree(folder_to_zip)
+        #shutil.rmtree(self.unzippedPathSample, ignore_errors=True)
 
-        print(f"Folder '{folder_to_zip}' zipped and moved to '{destination_path}'")
+        #print(f"Folder '{folder_to_zip}' zipped and moved to '{destination_path}'")
         
         self.active = False
         
@@ -1166,10 +1201,40 @@ class Evaluator:
         xml.SubElement(myRoot, "Version_PomoAI").text = self.versionPomoAI
         xml.SubElement(myRoot, "Version_Segmentierer").text = self.versionSegment
         xml.SubElement(myRoot, "Version_Klassifikator").text = self.versionClassif
-    
+
         # Write to xml file
         myTree.write(xmlFile, pretty_print=True)
         
+        # Save the results in an excel cheet for further analysis
+        data = []
+        tree = ElementTree.parse(xmlFile)
+        root = tree.getroot()
+        konz_list = root.find("./Konzentrationsliste")
+        if konz_list is not None:
+            for info in konz_list.findall("./Konzentrationsinformation"):
+                latin_name = info.attrib.get("Lateinischer_Name_Pollenart")
+                pollen_count = info.attrib.get("Pollenanzahl")
+                concentration = info.attrib.get("Pollenkonzentration")
+
+                if latin_name and pollen_count and concentration:
+                    try:
+                        row = {
+                            "Beginn_der_Probenahme": self.beginnDerProbenahme,
+                            "Ende_der_Probenahme": self.endeDerProbenahme,
+                            "Device": self.deviceName,
+                            "Analysenvolumenstrom": self.volStrom,
+                            "Stationsnummer": self.stationNumber,
+                            "Algorithm": "ZAUM_10",
+                            "Lateinischer_Name_Pollenart": latin_name,
+                            "Pollenanzahl": int(pollen_count),
+                            "Pollenkonzentration": float(concentration)
+                        }
+                        data.append(row)
+                    except ValueError:
+                        # Skip row if values are not valid numbers
+                        continue
+
+
         if len(self.pathOutAnalysis) != 0:
             if os.path.isdir(self.pathOutAnalysis):
                 logger.debug(f"Save analysis file to {self.pathOutAnalysis}")
@@ -1301,6 +1366,7 @@ class Evaluator:
             if os.path.isdir(self.pathOutAnalysis):
                 logger.debug(f"Save JSON file to {self.pathOutAnalysis}")
                 pd_to_json.to_json(os.path.join(self.pathOutAnalysis, jsonFileName), orient="records", lines=True)
+                print(f"Save JSON file to {self.pathOutAnalysis}")
             else:
                 logger.error(f"JSON output folder does not exist({self.pathOutAnalysis})")
         
